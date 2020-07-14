@@ -28,7 +28,7 @@ Instruction needed in order for someone to run the project in a local machine fo
 - webgl-debug.js 
 
 Both libraries are included in the repository.
-WebGL is supported by [Browsers](https://caniuse.com/#feat=webgl)
+WebGL is supported by [Browsers](https://caniuse.com/#feat=webgl){:target="_blank" rel="noopener"}
 
 _Tested using Firefox_ 
 
