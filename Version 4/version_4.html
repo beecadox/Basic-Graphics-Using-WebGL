@@ -1,0 +1,1240 @@
+<!DOCTYPE HTML>
+<html>
+    <head>
+        <title>
+            Version 4 - 161044
+        </title>
+        <meta charset="UTF-8">
+        <link rel="stylesheet" type="text/css" href="../css/my_stylesheet.css">
+        <script src="../Libraries/webgl-debug.js"></script>
+        <script src="../Libraries/gl-matrix-min.js"></script>
+        <!-- GLSL (GL Shader Language)-->
+        <!-- vertex shader-->
+        <script id="vShader" type="x-shader/x-vertex">
+
+            attribute vec4 aVertexPosition;
+            attribute vec2 aTextureCoordinates;
+
+            uniform mat4 uTransformMatrix;
+            uniform mat4 uPerspectiveViewMatrix;
+
+            varying vec2 vTextureCoordinates;
+
+            void main()
+            {
+                gl_Position = uPerspectiveViewMatrix * uTransformMatrix * aVertexPosition;
+                vTextureCoordinates = aTextureCoordinates;
+            }
+        </script>
+
+        <script id="fShader" type="x-shader/x-fragment">
+            precision mediump float;
+            varying vec2 vTextureCoordinates;
+            uniform sampler2D uSampler;
+
+            void main()
+            {
+                gl_FragColor = texture2D(uSampler, vTextureCoordinates);
+            }
+        </script>
+
+        <script>
+
+            var gl;
+            var canvas;
+            var shaderProgram;
+            var vertexPositionAttributePointer;
+            var textureCoordinatesAttributePointer;
+
+            var transformUniformPointer;
+            var perspectiveViewUniformPointer;
+
+            var vertexBuffer;
+            var indexBuffer;
+
+            var samplerUniformPointer;
+
+            var floorVBuffer; // Vertex - floor
+            var floorIBuffer; //Index - floor
+
+            var textureBuffer;
+            var faceTextureBuffer;
+            var bodyTextureBuffer;
+
+            var bodyTexture; //texture - body
+            var skyboxTexture; //texture - sky
+            var faceTexture; //texture - face
+            var floorTexture; //texture - floor
+
+            var totalAngle = 0;
+            var cameraDistance = 20;
+            var requestId = 0;
+
+            var numberOfFrames;
+            var previousTime;
+            var currentTime;
+
+            var mouseDown = false; // flag from when mouse is down
+            var deltaFresh = false;
+            var lastMouseX = null; // last position of the mouse in the canvas
+            var lastMouseY = null;
+            var currMouseX = null; // current position of the mouse in the canvas
+            var currMouseY = null;
+            var deltaMouseX = 0; // current - last mouse position
+            var deltaMouseY = 0;
+            var wheelRotate = 2; // initial value of the factor for rotation
+            var rect;
+
+            // flags for each animation
+            var headFlag = 1;
+            var legFlag = 1;
+            var tailFlag = 1;
+            var deadDogFlag = 1;
+            var walkXFlag = 1;
+            var headUpDownFlag = 1;
+            var backBodyFlag = -1;
+            var frontBodyFlag = 1;
+            var bodyScaleFlag = 1;
+            var pawsScaleFlag = 1;
+
+            var headRotation = 0;
+            var legsRotation = 0;
+            var tailRotation = 0;
+            var deadDogRotation = 0;
+            var walkXDistance = 0;
+            var headUpDownHeight = 0;
+            var backBodyDistance = 0;
+            var frontBodyDistance = 0;
+
+            var bodyScale = 1;
+            var pawsScale = 1;
+            var pawDistanceX = 0;
+
+            // sensitivities of rotations, translations and scaling of each animation that requires it
+            var rotationSensitivity = 0.02;
+            var tailRotationSensitivity = 0.1;
+            var distanceSensitivity = 0.1;
+            var pawDistanceSensitivity = 0.035;
+            var bodyScaleSensitivity = distanceSensitivity*0.15;
+
+            function createGLContext(canvas)
+            {
+                var context = null;
+
+                context = canvas.getContext("webgl");
+                if (!context)
+                    context = canvas.getContext("experimental-webgl");
+                if (context)
+                {
+                    context.viewportWidth = canvas.width;
+                    context.viewportHeight = canvas.height;
+                }
+                else
+                {
+                    alert("Failed to create WebGL context!");
+                }
+                return context;
+            }
+
+            function loadShader(type, shaderSource)
+            {
+                var shader = gl.createShader(type);
+                gl.shaderSource(shader, shaderSource);
+                gl.compileShader(shader);
+
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    alert("Error compiling shader" + gl.getShaderInfoLog(shader));
+                    gl.deleteShader(shader);
+                    return null;
+                }
+                return shader;
+            }
+            function setupShaders()
+            {
+                var vertexShaderSource = document.getElementById("vShader").textContent;
+
+                var fragmentShaderSource = document.getElementById("fShader").textContent;
+
+                var vertexShader = loadShader(gl.VERTEX_SHADER, vertexShaderSource);
+
+                var fragmentShader = loadShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
+
+                shaderProgram = gl.createProgram();
+                gl.attachShader(shaderProgram, vertexShader);
+                gl.attachShader(shaderProgram, fragmentShader);
+                gl.linkProgram(shaderProgram);
+
+                if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
+                {
+                    alert("Failed to setup shaders");
+                }
+
+                gl.useProgram(shaderProgram);
+
+                vertexPositionAttributePointer = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+                gl.enableVertexAttribArray(vertexPositionAttributePointer);
+
+                textureCoordinatesAttributePointer = gl.getAttribLocation(shaderProgram, "aTextureCoordinates");
+                gl.enableVertexAttribArray(textureCoordinatesAttributePointer);
+
+                transformUniformPointer = gl.getUniformLocation(shaderProgram, "uTransformMatrix");
+                perspectiveViewUniformPointer = gl.getUniformLocation(shaderProgram, "uPerspectiveViewMatrix");
+
+                samplerUniformPointer = gl.getUniformLocation(shaderProgram, "uSampler");
+            }
+
+            function setupBuffers()
+            {
+
+                vertexBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                var cubeVertices = [
+                    // top
+                    -1, -1,  1, 1,
+                    1, -1,  1, 1,
+                    1,  1,  1, 1,
+                    -1,  1,  1, 1,
+
+                    // bottom
+                    -1, -1, -1, 1,
+                    -1,  1, -1, 1,
+                    1,  1, -1, 1,
+                    1, -1, -1, 1,
+
+                    // left
+                    -1,  1, -1, 1,
+                    -1,  1,  1, 1,
+                    1,  1,  1, 1,
+                    1,  1, -1, 1,
+
+                    // right
+                    -1, -1, -1, 1,
+                    1, -1, -1, 1,
+                    1, -1,  1, 1,
+                    -1, -1,  1, 1,
+
+                    // front
+                    1, -1, -1, 1,
+                    1,  1, -1, 1,
+                    1,  1,  1, 1,
+                    1, -1,  1, 1,
+
+                    // back
+                    -1, -1, -1, 1,
+                    -1, -1,  1, 1,
+                    -1,  1,  1, 1,
+                    -1,  1, -1, 1];
+
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cubeVertices),	gl.STATIC_DRAW);
+                vertexBuffer.itemSize = 4;
+                vertexBuffer.numberOfItems = 24;
+
+                indexBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                var indexMatrix = [
+                    0,   1,  2,
+                    0,   2,  3,  // top
+
+                    4,   5,  6,
+                    4,   6,  7,  // bottom
+
+                    8,   9, 10,
+                    8,  10, 11,  // left
+
+                    12, 13, 14,
+                    12, 14, 15,  // right
+
+                    16, 17, 18,
+                    16, 18, 19,  // front
+
+                    20, 21, 22,
+                    20, 22, 23];  // back
+
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indexMatrix),gl.STATIC_DRAW);
+                indexBuffer.itemSize = 1;
+                indexBuffer.numberOfItems = 36;
+
+                floorVBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, floorVBuffer);
+
+                var floorVMatrix = [
+                    -1.0, -1.0, -1.0, 1.0,
+                     1.0, -1.0, -1.0, 1.0,
+                    -1.0,  1.0, -1.0, 1.0,
+                     1.0,  1.0, -1.0, 1.0];
+
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(floorVMatrix),	gl.STATIC_DRAW);
+                floorVBuffer.itemSize = 4;
+                floorVBuffer.numberOfItems = 4;
+
+                floorIBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, floorIBuffer);
+
+                var floorIMatrix = [
+                    0, 1, 2,
+                    2, 1, 3];
+
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(floorIMatrix), gl.STATIC_DRAW);
+                floorIBuffer.itemSize = 1;
+                floorIBuffer.numberOfItems = 6;
+
+                textureBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, textureBuffer);
+                var textureCoordinates=[
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0,
+
+                    0.0, 0.0, // texture Buffer
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0];
+
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);
+                textureBuffer.itemSize = 2;
+                textureBuffer.numberOfItems = 24;
+
+                faceTextureBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, faceTextureBuffer);
+                var faceTextureCoordinates=[
+                    // top
+                    0.0,  0.5,
+                    0.5,  0.5,
+                    0.5,  1.0,
+                    0.0,  1.0,
+
+                    // bottom
+                    0.0,  0.0,
+                    0.5,  0.0,
+                    0.5,  0.5,
+                    0.0,  0.5,
+
+                    // left
+                    0.0,  0.0,
+                    0.5,  0.0,
+                    0.5,  0.5,
+                    0.0,  0.5,
+
+                    // right
+                    0.0,  0.0,
+                    0.5,  0.0, // texture Buffer
+                    0.5,  0.5,
+                    0.0,  0.5,
+
+                    // front
+                    0.5,  0.0,
+                    1.0,  0.0,
+                    1.0,  0.5,
+                    0.5,  0.5,
+
+                    // back
+                    0.0,  0.0,
+                    0.5,  0.0,
+                    0.5,  0.5,
+                    0.0,  0.5];
+
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(faceTextureCoordinates), gl.STATIC_DRAW);
+                faceTextureBuffer.itemSize = 2;
+                faceTextureBuffer.numberOfItems = 24;
+
+                bodyTextureBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, bodyTextureBuffer);
+                var bodyTextureCoordinates = [
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0];
+
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(bodyTextureCoordinates), gl.STATIC_DRAW);
+                bodyTextureBuffer.itemSize = 2;
+                bodyTextureBuffer.numberOfItems = 24;
+
+                faceTexture = gl.createTexture();
+                loadImageForTexture("../Textures/face.jpg", faceTexture);
+
+                bodyTexture = gl.createTexture();
+                loadImageForTexture("../Textures/skin.jpg", bodyTexture);
+
+                floorTexture = gl.createTexture();
+                loadImageForTexture("../Textures/floor.jpg", floorTexture);
+
+                skyboxTexture = gl.createTexture();
+                loadImageForTexture("../Textures/sky.jpg", skyboxTexture);
+            }
+
+            function loadImageForTexture(url, textureObject) {
+
+                var image = new Image();
+
+                image.onload = function()
+                {
+                    gl.bindTexture(gl.TEXTURE_2D, textureObject);
+                    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+                    gl.generateMipmap(gl.TEXTURE_2D);
+                }
+                image.src = url;
+            }
+
+            function redraw()
+            {
+                var move_head = document.getElementById("head_button");
+                var move_left_leg = document.getElementById("left_leg_button");
+                var move_right_leg = document.getElementById("right_leg_button");
+                var move_tail = document.getElementById("tail_button");
+                var play_dead = document.getElementById("play_dead_button");
+                var play_dead_left = document.getElementById("play_dead_left_button");
+                var play_dead_right = document.getElementById("play_dead_right_button");
+                var static_walk = document.getElementById("static_walk_button");
+                var walk_x = document.getElementById("walking_x_button");
+                var dachshund = document.getElementById("dachshund_button");
+                var cartoon = document.getElementById("cartoon_button");
+
+                if(requestId && !mouseDown)
+                {
+                    var localAngle = parseFloat(document.getElementById("angleText").value);
+                    totalAngle = totalAngle + localAngle*Math.PI/180.0;
+
+                    if (totalAngle >= 2 * Math.PI) // if total angle is greater than 360 degrees
+                        totalAngle = totalAngle - 2 * Math.PI; // change it to the same angle less than 360
+                    else if (totalAngle < 0) // if total angle is negative
+                        totalAngle = totalAngle + 2 * Math.PI; // change it to the same value but positive
+
+                    var localZ = parseFloat(document.getElementById("heightText").value);
+                    cameraDistance += localZ;
+                  
+                    check_Animation_Movements(); //check if we have animation
+                }
+
+                var cameraAngle = parseFloat(document.getElementById("cameraAngleText").value);
+                cameraAngle = (cameraAngle%360)*Math.PI/180.0;
+
+                if( deltaFresh==true && mouseDown)
+                {
+                    totalAngle=totalAngle+deltaMouseX;
+                    cameraDistance=cameraDistance + deltaMouseY/10;
+                    deltaFresh=false;
+                }
+
+                var c = Math.cos(totalAngle);
+                var s = Math.sin(totalAngle);
+                var viewMatrix = mat4.create();
+
+                if(wheelRotate > 1000) wheelRotate=1000;
+                else if	(wheelRotate < 0.01)wheelRotate=0.01;
+
+                var pvMatrix = mat4.create();
+
+                var perspectiveMatrix = mat4.create();
+                mat4.lookAt(viewMatrix, [cameraDistance*c*wheelRotate, cameraDistance*s*wheelRotate, cameraDistance], [0, 0, 0], [0, 0, 1]);
+                mat4.perspective(perspectiveMatrix, cameraAngle, 1, 0.01, 10000); // camera perspective
+                mat4.multiply(pvMatrix,perspectiveMatrix,viewMatrix);
+                gl.uniformMatrix4fv(perspectiveViewUniformPointer, false, new Float32Array(pvMatrix));
+
+                if (walk_x.checked) rotationSensitivity = 0.1;
+                else rotationSensitivity = 0.02;
+
+                // translation of body parts
+                var bodyTranslationVertices = [ // body - translation
+                    -5.5, -4.5,    1,   // back right paw
+                    5.5,  4.5,    1,   // front left paw
+                    -5.5,  4.5,    1,   // back left paw
+                    5.5, -4.5,    1,   // front right paw
+                    -1.0,    0,    7,   // body
+                    4.0,    0,   11,   // neck
+                    -6.5,  -4.5,   5,   // back right leg
+                    4.5,   4.5,   5,   // front left leg
+                    -6.5,   4.5,   5,   // back left leg
+                    4.5,  -4.5,   5,   // front right leg
+                    -9,     0, 9.5,   // tail
+                    3.0,  -4.0,  14,   // right ear
+                    3.0,   4.0,  14];  // left ear
+
+                var faceTranslationVertices = [ // head - translation
+                    6.0, 0, 14.5];    // head
+
+
+                var bodyScalingVertices = [ // body - scaling
+                    5/2, 3/2, 2/2, // back right paw
+                    5/2, 3/2, 2/2, // front left paw
+                    5/2, 3/2, 2/2, // back left paw
+                    5/2, 3/2, 2/2, // front right paw
+                    14/2, 6/2, 5/2, // body
+                    4/2, 4/2, 3/2, // neck
+                    3/2, 3/2, 6/2,  // back right leg
+                    3/2, 3/2, 6/2,  // front left leg
+                    3/2, 3/2, 6/2,  // back left leg
+                    3/2, 3/2, 6/2,  // front right leg
+                    2/2, 2/2, 5/2,  // tail
+                    2/2, 2/2, 5/2,  // right ear
+                    2/2, 2/2, 5/2]; // left ear
+
+                var faceScalingVertices = [ // head - scaling
+                    8/2, 6/2, 4/2];  // head
+
+
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                // BODY
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.vertexAttribPointer(vertexPositionAttributePointer, vertexBuffer.itemSize, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, bodyTexture);
+                gl.uniform1i(samplerUniformPointer, 0);
+                gl.bindBuffer(gl.ARRAY_BUFFER, bodyTextureBuffer);
+                gl.vertexAttribPointer(textureCoordinatesAttributePointer, bodyTextureBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                var body_part = mat4.create();
+                var tmp_body_part = mat4.create();
+                var p;
+
+                for (p = 0; p <= 13 * 3; p += 3)
+                {
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                    mat4.fromTranslation(body_part, [bodyTranslationVertices[p], bodyTranslationVertices[p + 1], bodyTranslationVertices[p + 2]]);
+                    mat4.fromScaling(tmp_body_part, [bodyScalingVertices[p], bodyScalingVertices[p + 1], bodyScalingVertices[p + 2]]);
+                    mat4.multiply(body_part, body_part, tmp_body_part);
+
+                    // move legs and paws by 90 degrees - top
+                    if ((move_left_leg.checked && (p === 3 || p === 7 * 3)) ||
+                        (move_right_leg.checked && (p === 3 * 3 || p === 9 * 3)))
+                    {
+                        body_part = moveLegAnimation(body_part)
+                    }
+                    // move tail - left right
+                    if (move_tail.checked && p === 10 * 3)
+                    {
+                        body_part = moveTailAnimation(body_part);
+                    }
+                    // move ears and head left right
+                    if (move_head.checked && (p === 11 * 3 || p === 12 * 3))
+                    {
+                        body_part = moveHeadAnimation(body_part);
+                    }
+                    // play dead
+                    if (play_dead.checked)
+                    {
+                        if (play_dead_left.checked)
+                            body_part = playDeadAnimation(body_part, "left");
+                        if (play_dead_right.checked)
+                            body_part = playDeadAnimation(body_part, "right");
+                    }
+                    // static walk
+                    if (static_walk.checked)
+                    {
+                        // back right leg-paw
+                        if (p === 0 || p === 6 * 3)
+                        {
+                            body_part = staticWalkAnimation(body_part, 1);
+                        }
+                        // front left leg-paw
+                        if (p === 3 || p === 7 * 3)
+                        {
+                            body_part = staticWalkAnimation(body_part, 2);
+                        }
+                        // back left leg-paw
+                        if (p === 2 * 3 || p === 8 * 3 )
+                        {
+                            body_part = staticWalkAnimation(body_part, 3);
+                        }
+                        // front right leg-paw
+                        if (p === 3 * 3 || p === 9 * 3)
+                        {
+                            body_part = staticWalkAnimation(body_part, 4);
+                        }
+                    }
+                    // normal walk
+                    if (walk_x.checked)
+                    {
+                        // back right leg-paw
+                        if (p === 0 || p === 6 * 3)
+                        {
+                            body_part = normalWalkAnimation(body_part, 1);
+                        }
+                        // front left leg-paw
+                        else if (p === 3 || p === 7 * 3)
+                        {
+                            body_part = normalWalkAnimation(body_part, 2);
+                        }
+                        // back left leg-paw
+                        else if (p === 2 * 3 || p === 8 * 3 )
+                        {
+                            body_part = normalWalkAnimation(body_part, 3);
+                        }
+                        // front right leg-paw
+                        else if (p === 3 * 3 || p === 9 * 3)
+                        {
+                            body_part = normalWalkAnimation(body_part, 4);
+                        } // other body parts
+                        else if (p === 4 * 3 || p === 5 * 3 ||
+                                    p === 10 * 3 || p === 11 * 3 || p === 12 * 3 )
+                        {
+                            body_part = normalWalkAnimation(body_part, 0);
+                        }
+                    }
+                    // dachshund dog
+                    if(dachshund.checked)
+                    {
+                        // body
+                        if (p === 4*3 )
+                        {
+                            body_part = dachshundAnimation(body_part, 0);
+                        }
+                        // front side
+                        else if (p === 3 || p === 3 * 3 || p === 7 * 3 || p === 9 * 3 || p === 5 * 3 ||
+                                 p === 11 * 3 || p === 12 * 3)
+                        {
+                            body_part = dachshundAnimation(body_part, 1);
+                        }
+                        // back side
+                        else if (p === 0 || p === 2 * 3 || p === 6 * 3 || p === 8 * 3 || p === 10 * 3)
+                        {
+                            body_part = dachshundAnimation(body_part, -1);
+                        }
+                    }
+                    // cartoonized dog
+                    if(cartoon.checked)
+                    {
+                        // ears
+                        if (p === 11 * 3 || p === 12 * 3)
+                        {
+                            body_part = cartoonAnimation(body_part, 1, "no");
+                        }
+                        // tail
+                        else if (p === 10 * 3)
+                        {
+                            body_part = cartoonAnimation(body_part, 2, "no");
+                        }
+                        // paws
+                        else if (p === 0 )
+                        {
+                            body_part = cartoonAnimation(body_part, 3, "br");
+                        }
+                        else if (p === 3 )
+                        {
+                            body_part = cartoonAnimation(body_part, 3, "ll");
+                        }
+                        else if (p === 2 * 3)
+                        {
+                            body_part = cartoonAnimation(body_part, 3, "bl");
+                        }
+                        else if (p === 3 * 3 )
+                        {
+                            body_part = cartoonAnimation(body_part, 3, "lr");
+                        }
+                    }
+                    gl.uniformMatrix4fv(transformUniformPointer, false, new Float32Array(body_part));
+                    gl.drawElements(gl.TRIANGLES, indexBuffer.numberOfItems, gl.UNSIGNED_SHORT, 0);
+                }
+
+                // HEAD
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.vertexAttribPointer(vertexPositionAttributePointer, vertexBuffer.itemSize, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+
+                gl.activeTexture(gl.TEXTURE1);
+                gl.bindTexture(gl.TEXTURE_2D, faceTexture);
+                gl.uniform1i(samplerUniformPointer, 1);
+                gl.bindBuffer(gl.ARRAY_BUFFER, faceTextureBuffer);
+                gl.vertexAttribPointer(textureCoordinatesAttributePointer, faceTextureBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                p = 0;
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                mat4.fromTranslation(body_part, [faceTranslationVertices[p], faceTranslationVertices[p + 1], faceTranslationVertices[p + 2]]);
+                mat4.fromScaling(tmp_body_part, [faceScalingVertices[p], faceScalingVertices[p + 1], faceScalingVertices[p + 2]]);
+                mat4.multiply(body_part, body_part, tmp_body_part);
+
+                {
+                    // move head
+                    if (move_head.checked)
+                    {
+                        body_part = moveHeadAnimation(body_part);
+                    }
+                    // play dead
+                    if (play_dead.checked)
+                    {
+                        if (play_dead_left.checked)
+                            body_part = playDeadAnimation(body_part, "left");
+                        if (play_dead_right.checked)
+                            body_part = playDeadAnimation(body_part, "right");
+                    }
+                    // normal walk
+                    if (walk_x.checked)
+                    {
+                        body_part = normalWalkAnimation(body_part, 0);
+                    }
+                    // dachshund dog
+                    if (dachshund.checked)
+                    {
+                        body_part = dachshundAnimation(body_part, 1);
+                    }
+                    // cartoonized dog
+                    if (cartoon.checked)
+                    {
+                        body_part = cartoonAnimation(body_part, 1)
+                    }
+                }
+
+                gl.uniformMatrix4fv(transformUniformPointer, false, new Float32Array(body_part));
+                gl.drawElements(gl.TRIANGLES,indexBuffer.numberOfItems, gl.UNSIGNED_SHORT, 0);
+
+                // SKY
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.vertexAttribPointer(vertexPositionAttributePointer, vertexBuffer.itemSize, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+
+                gl.activeTexture(gl.TEXTURE2);
+                gl.bindTexture(gl.TEXTURE_2D, skyboxTexture);
+                gl.uniform1i(samplerUniformPointer, 2);
+                gl.bindBuffer(gl.ARRAY_BUFFER, textureBuffer);
+                gl.vertexAttribPointer(textureCoordinatesAttributePointer, textureBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                var sky_temp=mat4.create();
+                mat4.fromScaling(sky_temp,[5000/2, 5000/2, 5000/2]);
+                gl.uniformMatrix4fv(transformUniformPointer, false, new Float32Array(sky_temp));
+                gl.drawElements(gl.TRIANGLES, indexBuffer.numberOfItems, gl.UNSIGNED_SHORT, 0);
+
+                // FLOOR
+                gl.bindBuffer(gl.ARRAY_BUFFER, floorVBuffer);
+                gl.vertexAttribPointer(vertexPositionAttributePointer, floorVBuffer.itemSize, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, floorIBuffer);
+
+                gl.activeTexture(gl.TEXTURE3);
+                gl.bindTexture(gl.TEXTURE_2D, floorTexture);
+                gl.uniform1i(samplerUniformPointer, 3);
+                gl.bindBuffer(gl.ARRAY_BUFFER, textureBuffer);
+                gl.vertexAttribPointer(textureCoordinatesAttributePointer, textureBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                var floor_temp=mat4.create();
+                var floor_trans=mat4.create();
+                mat4.fromScaling(floor_temp, [12.5, 12.5, 0] );
+                mat4.fromTranslation(floor_trans, [0, 0, 0]);
+                mat4.multiply(floor_temp, floor_trans, floor_temp);
+                gl.uniformMatrix4fv(transformUniformPointer, false, new Float32Array(floor_temp));
+                gl.polygonOffset(-1,1);
+                gl.enable(gl.POLYGON_OFFSET_FILL);
+                gl.drawElements(gl.TRIANGLES, floorIBuffer.numberOfItems, gl.UNSIGNED_SHORT, 0);
+                gl.disable(gl.POLYGON_OFFSET_FILL);
+            }
+
+            //--------------------------------------------------
+            // custom functions
+            //--------------------------------------------------
+
+            // when head animation radio button is checked
+            function moveHeadAnimation(head)
+            {
+
+                var rotate_head = mat4.create();
+                var translate_head = mat4.create();
+
+                mat4.fromTranslation(translate_head, [-4.0, 0, 0]);
+                mat4.multiply(head, translate_head, head);
+                mat4.fromRotation(rotate_head, headRotation, [0, 0, 1]);
+                mat4.multiply(head, rotate_head, head);
+                mat4.fromTranslation(translate_head, [4.0, 0, 0]);
+                mat4.multiply(head, translate_head, head);
+                return head;
+            }
+
+            // when legs animation radio button is checked
+            function moveLegAnimation(leg)
+            {
+                var rotate_leg = mat4.create();
+                var translate_leg = mat4.create();
+
+                mat4.fromTranslation(translate_leg, [-5.5, 0, -6.5]);
+                mat4.multiply(leg, translate_leg, leg);
+                mat4.fromRotation(rotate_leg, legsRotation, [0, -1, 0]);
+                mat4.multiply(leg, rotate_leg, leg);
+                mat4.fromTranslation(translate_leg, [5.5, 0, 6.5]);
+                mat4.multiply(leg, translate_leg, leg);
+                return leg;
+            }
+
+            // when tail animation radio button is checked
+            function moveTailAnimation(tail)
+            {
+                var rotate_tail = mat4.create();
+                var translate_tail = mat4.create();
+
+                mat4.fromTranslation(translate_tail, [0, 0, -8]);
+                mat4.multiply(tail, translate_tail, tail);
+                mat4.fromRotation(rotate_tail, tailRotation, [-1, 0, 0]);
+                mat4.multiply(tail, rotate_tail, tail);
+                mat4.fromTranslation(translate_tail, [0, 0, 8]);
+                mat4.multiply(tail, translate_tail, tail);
+                return tail;
+            }
+
+            // when "play dead" radio button is checked
+            function playDeadAnimation(dead_part, side)
+            {
+                var rotate_body = mat4.create();
+                var translate_body = mat4.create();
+                var body_translation_1 = vec3.create();
+                var body_translation_2 = vec3.create();
+                var moveBody;
+                if(side === "left") // fall to left side
+                {
+                    moveBody = -1;
+                    body_translation_1 = [0, -6, 0];
+                    body_translation_2 = [0, 6, 0];
+                }
+                if(side === "right") // fall to right side
+                {
+                    moveBody = 1;
+                    body_translation_1 = [0, 6, 0];
+                    body_translation_2 = [0, -6, 0];
+                }
+                mat4.fromTranslation(translate_body, body_translation_1);
+                mat4.multiply(dead_part, translate_body, dead_part);
+                mat4.fromRotation(rotate_body, deadDogRotation, [moveBody, 0, 0]);
+                mat4.multiply(dead_part, rotate_body, dead_part);
+                mat4.fromTranslation(translate_body, body_translation_2);
+                mat4.multiply(dead_part, translate_body, dead_part);
+
+                return dead_part;
+            }
+
+            // when "static walk" radio button is checked
+            function staticWalkAnimation(all_legs, leg_number)
+            {
+                var rotate_leg = mat4.create();
+                var translate_leg = mat4.create();
+                var moveLeg;
+                var leg_translation_1 = vec3.create();
+                var leg_translation_2 = vec3.create();
+                // back legs
+                if(leg_number === 1)
+                {
+                    moveLeg = -1;
+                    leg_translation_1 = [6.5, 0, -6.5];
+                    leg_translation_2 = [-6.5, 0, 6.5];
+                }
+                else if (leg_number === 3)
+                {
+                    moveLeg = 1;
+                    leg_translation_1 = [6.5, 0, -6.5];
+                    leg_translation_2 = [-6.5, 0, 6.5];
+                }
+                // front legs
+                else if (leg_number === 2)
+                {
+                    moveLeg = -1;
+                    leg_translation_1 = [-4.5, 0, -6.5];
+                    leg_translation_2 = [4.5, 0, 6.5];
+                }
+                else if(leg_number === 4 )
+                {
+                    moveLeg = 1;
+                    leg_translation_1 = [-4.5, 0, -6.5];
+                    leg_translation_2 = [4.5, 0, 6.5];
+                }
+                mat4.fromTranslation(translate_leg, leg_translation_1);
+                mat4.multiply(all_legs, translate_leg, all_legs);
+                mat4.fromRotation(rotate_leg, legsRotation, [0, moveLeg, 0]);
+                mat4.multiply(all_legs, rotate_leg, all_legs);
+                mat4.fromTranslation(translate_leg, leg_translation_2);
+                mat4.multiply(all_legs, translate_leg, all_legs);
+
+                return all_legs;
+            }
+
+            // when "normal walk" radio button is checked
+            function normalWalkAnimation(walking_body, body_part)
+            {
+
+                var translate_body = mat4.create();
+
+                if (body_part !== 0 )   // if legs
+                    staticWalkAnimation(walking_body, body_part)
+                mat4.fromTranslation(translate_body, [walkXDistance,0 , 0]);
+                mat4.multiply(walking_body, translate_body, walking_body);
+                
+                return walking_body;
+            }
+
+            // when "dachshund" radio button is checked
+            function dachshundAnimation(dachshund_body, body_part)
+            {
+                var translate_body = mat4.create();
+                var scale_body = mat4.create();
+                if (body_part === 0 ) { // body
+                    mat4.fromTranslation(translate_body, [1, 0, 0]);
+                    mat4.multiply(dachshund_body, translate_body, dachshund_body);
+                    mat4.fromScaling(scale_body, [bodyScale, 1, 1]);
+                    mat4.multiply(dachshund_body, scale_body, dachshund_body);
+                    mat4.fromTranslation(translate_body, [-1, 0, 0]);
+                    mat4.multiply(dachshund_body, translate_body, dachshund_body);
+                }
+                else if (body_part === 1 )  // front side
+                {
+                    mat4.fromTranslation(translate_body, [frontBodyDistance, 0 , 0]);
+                    mat4.multiply(dachshund_body, translate_body, dachshund_body);
+                }
+                else if (body_part === -1 ) // back side
+                {
+                    mat4.fromTranslation(translate_body, [backBodyDistance, 0 , 0]);
+                    mat4.multiply(dachshund_body, translate_body, dachshund_body);
+                }
+                return dachshund_body;
+            }
+
+            // when "cartoon" radio button is checked
+            function cartoonAnimation(cartoon_part, body_part, paw_flag)
+            {
+                var translate_body = mat4.create();
+                var scale_paw = mat4.create();
+                var rotate_body = mat4.create();
+                var paws_translation_1 = vec3.create();
+                var paws_translation_2 = vec3.create();
+
+                if (body_part === 1 ) // head-ears
+                {
+                    mat4.fromTranslation(translate_body, [0, 0 , headUpDownHeight]);
+                    mat4.multiply(cartoon_part, translate_body, cartoon_part);
+                }
+                else if (body_part === 2 )  // tail
+                {
+                    mat4.fromTranslation(translate_body, [0, 0, -8]);
+                    mat4.multiply(cartoon_part, translate_body, cartoon_part);
+                    mat4.fromRotation(rotate_body, tailRotation, [-1, 0, 0]);
+                    mat4.multiply(cartoon_part, rotate_body, cartoon_part);
+                    mat4.fromTranslation(translate_body, [0, 0, 8]);
+                    mat4.multiply(cartoon_part, translate_body, cartoon_part);
+                }
+                else if (body_part === 3 ) // paws
+                {
+
+                    if (paw_flag === "br")
+                    {
+                        paws_translation_1 = [5.5, 4.5, -1];
+                        paws_translation_2 = [-5.5, -4.5, 1];
+                    }
+                    else if (paw_flag === "ll")
+                    {
+                        paws_translation_1 = [-5.5,  -4.5, -1];
+                        paws_translation_2 = [5.5,  4.5, 1];
+                    }
+                    else if (paw_flag === "bl")
+                    {
+                        paws_translation_1 = [5.5,  -4.5, -1];
+                        paws_translation_2 = [-5.5,  4.5, 1];
+                    }
+                    else if (paw_flag === "lr")
+                    {
+                        paws_translation_1 = [-5.5, 4.5, -1];
+                        paws_translation_2 = [5.5, -4.5, 1];
+                    }
+                    mat4.fromTranslation(translate_body, paws_translation_1);
+                    mat4.multiply(cartoon_part, translate_body, cartoon_part);
+                    mat4.fromScaling(scale_paw, [pawsScale, pawsScale, 1]);
+                    mat4.multiply(cartoon_part, scale_paw, cartoon_part);
+                    mat4.fromTranslation(translate_body, paws_translation_2);
+                    mat4.multiply(cartoon_part, translate_body, cartoon_part);
+                    mat4.fromTranslation(translate_body, [pawDistanceX, 0, 0]);
+                    mat4.multiply(cartoon_part, translate_body, cartoon_part);
+                }
+                return cartoon_part;
+            }
+
+            function check_Animation_Movements()
+            {
+                var move_head = document.getElementById("head_button");
+                var move_left_leg = document.getElementById("left_leg_button");
+                var move_right_leg = document.getElementById("right_leg_button");
+                var move_tail = document.getElementById("tail_button");
+                var static_walk = document.getElementById("static_walk_button");
+                var play_dead = document.getElementById("play_dead_button");
+                var walk_x = document.getElementById("walking_x_button");
+                var dachshund = document.getElementById("dachshund_button");
+                var cartoon = document.getElementById("cartoon_button");
+
+                if (move_right_leg.checked || move_left_leg.checked)
+                {
+                    if(legsRotation+legFlag*rotationSensitivity > Math.PI/2) legsRotation=Math.PI/2;
+                    else if	(legsRotation+legFlag*rotationSensitivity < 0 ) legsRotation=0;
+
+                    if(legsRotation+legFlag*rotationSensitivity>=Math.PI/2 || legsRotation+legFlag*rotationSensitivity <=0)
+                        legFlag*=-1;
+                    legsRotation+=legFlag*rotationSensitivity;
+                }
+                else if (move_tail.checked)
+                {
+                    if(tailRotation+tailFlag*rotationSensitivity>Math.PI/2) tailRotation = Math.PI/2;
+                    else if(tailRotation+tailFlag*rotationSensitivity<-Math.PI/2) tailRotation = -Math.PI/2;
+                    if(Math.abs(tailRotation+tailFlag*rotationSensitivity)>=Math.PI/2)
+                        tailFlag*=-1;
+                    tailRotation+=tailFlag*rotationSensitivity;
+                }
+                else if (move_head.checked)
+                {
+                    if (Math.abs(headRotation + headFlag * rotationSensitivity) >= Math.PI / 2)
+                        headFlag *= -1;
+                    headRotation += headFlag * rotationSensitivity;
+                }
+                else if (play_dead.checked)
+                {
+                    if(deadDogRotation+deadDogFlag*rotationSensitivity>=Math.PI/2
+                        || deadDogRotation+deadDogFlag*rotationSensitivity < 0)
+                        deadDogFlag*=-1;
+                    deadDogRotation+=deadDogFlag*rotationSensitivity;
+                }
+                else if (static_walk.checked)
+                {
+                    if(Math.abs(legsRotation+legFlag*rotationSensitivity)>=Math.PI/2)
+                        legFlag*=-1;
+                    legsRotation+=legFlag*rotationSensitivity;
+                }
+                else if (walk_x.checked)
+                {
+                    if(Math.abs(walkXDistance+walkXFlag*distanceSensitivity)>=4)
+                        walkXFlag*=-1;
+                    walkXDistance+=walkXFlag*distanceSensitivity;
+
+                    if(Math.abs(legsRotation+legFlag*rotationSensitivity)>=Math.PI/2)
+                        legFlag*=-1;
+                    legsRotation+=legFlag*rotationSensitivity;
+                }
+                else if(dachshund.checked)
+                {
+                    if(backBodyDistance+backBodyFlag*distanceSensitivity<=-4
+                        || backBodyDistance+backBodyFlag*distanceSensitivity>0 ){
+                        backBodyFlag*=-1;
+                        bodyScaleFlag*=-1;
+                    }
+                    if(frontBodyDistance+frontBodyFlag*distanceSensitivity>=4
+                        || frontBodyDistance+frontBodyFlag*distanceSensitivity<0 ) {
+                        frontBodyFlag *= -1;
+                    }
+                    backBodyDistance+=backBodyFlag*distanceSensitivity;
+                    frontBodyDistance+=frontBodyFlag*distanceSensitivity;
+                    bodyScale+=bodyScaleFlag*bodyScaleSensitivity;
+                }
+                if(cartoon.checked)
+                {
+                    tailRotation+=tailFlag*tailRotationSensitivity;
+                    tailRotation = tailRotation%(2*Math.PI);
+                    if(headUpDownHeight+headUpDownFlag*distanceSensitivity>=3 || headUpDownHeight+headUpDownFlag*distanceSensitivity<=0) {
+                        headUpDownFlag *= -1;
+                        pawsScaleFlag*=-1;
+                    }
+                    headUpDownHeight+=headUpDownFlag*distanceSensitivity;
+
+                    pawDistanceX += pawsScaleFlag *pawDistanceSensitivity;
+                    pawsScale += pawsScaleFlag * bodyScaleSensitivity;
+                }
+            }
+
+            function startup()
+            {
+                canvas = document.getElementById("myGLCanvas");
+                var minDimension=Math.min(window.innerWidth,window.innerHeight);
+                canvas.width = 0.8*minDimension;
+                canvas.height = 0.8*minDimension;
+                gl = WebGLDebugUtils.makeDebugContext(createGLContext(canvas));
+                setupShaders();
+                setupBuffers();
+                gl.clearColor(0.176, 0.213, 0.360, 1.0);
+
+                gl.enable(gl.DEPTH_TEST);
+                gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+                previousTime = Date.now();
+                NumberOfFrames = 0;
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                canvas.onmousedown = handleMouseDown;
+                window.onmouseup = handleMouseUp;
+                canvas.onmousemove = handleMouseMove;
+                canvas.onwheel = handleMouseWheel;
+
+                rect = canvas.getBoundingClientRect();
+                startAnim();
+            }
+
+            function handleMouseDown(event)
+            {
+                mouseDown = true;
+                lastMouseX = event.clientX - rect.left;
+                lastMouseY = rect.bottom - event.clientY;
+                deltaMouseX = 0;
+                deltaMouseY = 0;
+                deltaFresh = true;
+            }
+
+            function handleMouseUp(event)
+            {
+                mouseDown = false;
+            }
+
+            function handleMouseMove(event)
+            {
+                currMouseX = event.clientX - rect.left;
+                currMouseY = rect.bottom - event.clientY;
+                document.getElementById("mouseX").innerHTML = currMouseX;
+                document.getElementById("mouseY").innerHTML = currMouseY;
+
+                if (mouseDown)
+                {
+                    deltaMouseX = currMouseX - lastMouseX;
+                    deltaMouseY = currMouseY - lastMouseY;
+                    deltaFresh = true;
+                }
+                if(!requestId) redraw();
+
+                lastMouseX = currMouseX;
+                lastMouseY = currMouseY;
+            }
+
+            function handleMouseWheel(event)
+            {
+                var move_head = document.getElementById("head_button");
+                var move_left_leg = document.getElementById("left_leg_button");
+                var move_right_leg = document.getElementById("right_leg_button");
+                var move_tail = document.getElementById("tail_button");
+                var static_walk = document.getElementById("static_walk_button");
+                var play_dead = document.getElementById("play_dead_button");
+                var walk_x = document.getElementById("walking_x_button");
+                var dachshund = document.getElementById("dachshund_button");
+                var cartoon = document.getElementById("cartoon_button");
+
+                if(move_head.checked || move_left_leg.checked || move_right_leg.checked || static_walk.checked ||
+                    move_tail.checked || play_dead.checked || walk_x.checked || dachshund.checked || cartoon.checked)
+                {
+                    check_Animation_Movements(); // call function for movement
+                }
+                else
+                {
+                    if (event.deltaY > 0 )
+                        wheelRotate = wheelRotate * 1.01;
+                    else if  (event.deltaY < 0 )
+                        wheelRotate = wheelRotate * 0.99;
+                }
+                if(!requestId) redraw();
+            }
+
+            function startAnim()
+            {
+                if (!requestId)
+                    anim();
+            }
+
+            function anim()
+            {
+                redraw();
+                numberOfFrames++;
+                currentTime = Date.now();
+                if (currentTime - previousTime >= 1000)
+                {
+                    document.getElementById("fps").innerHTML = numberOfFrames;
+                    numberOfFrames = 0;
+                    previousTime = currentTime;
+                }
+                requestId = window.requestAnimationFrame(anim);
+
+            }
+
+            function stopAnim()
+            {
+                window.cancelAnimationFrame(requestId);
+                requestId = 0;
+            }
+        </script>
+    </head>
+    <!-- HTML/ CSS Screen Split-->
+    <body onload="startup()">
+        <div class="split left">
+            <div class="centered">
+                <canvas id="myGLCanvas" >
+                </canvas>
+            </div>
+        </div>
+        <div class="split right">
+            <div class="centered">
+                    Camera Angle: <input type="text" id="cameraAngleText" min="0" value="70"> <br><br>
+                    Rotate camera by: <label for="angleText"></label><input type="text" id="angleText" value="1"><br><br>
+                    Raise camera by: <label for="heightText"></label><input type="text" id="heightText" value="0.01">
+                    <br><br>
+                    Frames Rate (Frames Per Second - FPS): <span id="fps">--</span><br>
+                    Last Canvas Mouse Position x: <span id="mouseX">--</span> ,y: <span id="mouseY">--</span>
+
+                    <h1>DOG MOVES</h1>
+                    Don't move parts <label for="no_button"></label><input type="radio" name="radionbutton" value="10" id="no_button" checked/><br>
+                    <h3>BASIC MOVEMENTS</h3>
+                    Head <label for="head_button"></label><input type="radio" name="radionbutton" value="1" id="head_button"/>
+                    Left Leg <label for="left_leg_button"></label><input type="radio" name="radionbutton" value="2" id="left_leg_button"/>
+                    Right Leg <label for="right_leg_button"></label><input type="radio" name="radionbutton" value="3" id="right_leg_button"/>
+                    Tail <label for="tail_button"></label><input type="radio" name="radionbutton" value="4" id="tail_button"/>
+                    <h3>ANIMATED MOVEMENTS</h3>
+                    Play Dead <label for="play_dead_button"></label><input type="radio" name="radionbutton" value="5" id="play_dead_button"/>
+                    <br>
+                    <span style="margin-left:2em">
+                        Left <label for="play_dead_left_button"></label><input type="radio" name="playdead" value="1" id="play_dead_left_button" checked/>
+                        Right <label for="play_dead_right_button"></label><input type="radio" name="playdead" value="2" id="play_dead_right_button"/>
+                    </span>
+                    <p></p>
+                    Static Walking <label for="static_walk_button"></label><input type="radio" name="radionbutton" value="6" id="static_walk_button"/>
+                    <p></p>
+                    Walking on axis x <label for="walking_x_button"></label><input type="radio" name="radionbutton" value="7" id="walking_x_button"/>
+                    <p></p>
+                    Dachshund <label for="dachshund_button"></label><input type="radio" name="radionbutton" value="8" id="dachshund_button"/>
+                    <p></p>
+                    Cartoon <label for="cartoon_button"></label><input type="radio" name="radionbutton" value="9" id="cartoon_button"/>
+                    <br>
+                    <b>Animation</b>
+                    <button class="button button1" onClick=startAnim()>Start</button>
+                    <button class="button button1" onClick=stopAnim()>Stop</button>
+            </div>
+        </div>
+    </body>
+</html>
